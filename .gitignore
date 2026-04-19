@@ -1,0 +1,5 @@
+shelter.log
+__pycache__/
+*.pyc
+.shelter-backup
+state/snapshots/*.yaml

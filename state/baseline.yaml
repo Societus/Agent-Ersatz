@@ -1,0 +1,111 @@
+# ─── Tracked Files ────────────────────────────────────────────────────────
+# Files that shelter monitors and snapshots for drift detection.
+
+tracked_files:
+  - ~/.hermes/config.yaml
+  - ~/.hermes/hermes-agent/tools/web_tools.py
+
+# ─── State Checks ────────────────────────────────────────────────────────
+# Each check declares what a file must contain / must not contain,
+# and optionally specific YAML key-value pairs that must hold.
+# Shelter will report drift and attempt to fix via static patches or LLM edits.
+
+checks:
+  # ── config.yaml: SearXNG is the web backend ──
+  - name: config-web-searxng
+    file: ~/.hermes/config.yaml
+    yaml_values:
+      web.backend: searxng
+      web.searxng_url: https://searxng.tail0964.ts.net
+    must_contain:
+      - "backend: searxng"
+      - "searxng_url: https://searxng.tail0964.ts.net"
+
+  # ── config.yaml: No cloud API backends configured ──
+  - name: config-no-cloud-backends
+    file: ~/.hermes/config.yaml
+    must_not_contain:
+      # These should never be uncommented/set in a private deployment
+      - "backend: firecrawl"
+      - "backend: tavily"
+      - "backend: exa"
+      - "backend: parallel"
+
+  # ── config.yaml: MCP servers for web caching ──
+  - name: config-mcp-servers
+    file: ~/.hermes/config.yaml
+    must_contain:
+      - "mcp_servers:"
+      - "mcp-server-fetch"
+      - "mcp-server-filesystem"
+      - "/home/martin/.hermes/webcache"
+
+  # ── config.yaml: Timeout safety margins for slow local LLM ──
+  - name: config-timeouts
+    file: ~/.hermes/config.yaml
+    yaml_values:
+      agent.gateway_timeout: 7200
+      terminal.timeout: 600
+    must_contain:
+      - "gateway_timeout: 7200"
+
+  # ── config.yaml: Privacy — no cloud fallback providers ──
+  - name: config-privacy
+    file: ~/.hermes/config.yaml
+    must_not_contain:
+      # Only flag if uncommented (not starting with #)
+      # We check for active YAML keys by requiring the must_contain checks
+      # and checking that cloud backends aren't active
+      - "backend: firecrawl"
+      - "backend: tavily"
+      - "backend: exa"
+      - "backend: parallel"
+
+  # ── web_tools.py: SearXNG backend registered ──
+  - name: webtools-searxng-backend
+    file: ~/.hermes/hermes-agent/tools/web_tools.py
+    must_contain:
+      - '"searxng"'
+      - "def _searxng_search(query"
+      - "def _searxng_extract(urls"
+      - "def _get_searxng_url()"
+      - 'if backend == "searxng":'
+
+# ── Static Patches ──────────────────────────────────────────────────────
+# Git-format patches that shelter tries to apply before falling back to LLM.
+# repo_dir is the git repo where `git apply` runs.
+
+patches:
+  - name: searxng-backend
+    file: searxng-backend.patch
+    target: ~/.hermes/hermes-agent/tools/web_tools.py
+    repo_dir: ~/.hermes/hermes-agent
+
+# ── Test Scripts ────────────────────────────────────────────────────────
+# Python scripts in tests/ that exit 0 on pass, non-zero on fail.
+# These run after patching to verify the config actually works.
+
+test_scripts:
+  - name: SearXNG backend is selected
+    script: test_searxng_backend.py
+    timeout: 15
+
+  - name: SearXNG search returns results
+    script: test_searxng_search.py
+    timeout: 30
+
+  - name: SearXNG extract returns content
+    script: test_searxng_extract.py
+    timeout: 30
+
+  - name: Config timeouts are safe
+    script: test_timeouts.py
+    timeout: 10
+
+  - name: No cloud API keys leaked
+    script: test_no_cloud_keys.py
+    timeout: 10
+
+  - name: MCP servers configured
+    script: test_mcp_config.py
+    timeout: 10
