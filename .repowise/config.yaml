@@ -1,0 +1,4 @@
+provider: ollama
+model: qwen3.6-35b-a3b
+embedder: mock
+max_concurrency: 1

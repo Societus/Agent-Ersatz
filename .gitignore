@@ -5,3 +5,7 @@ __pycache__/
 state/snapshots/*.yaml
 shelter.conf
 benchmark-*.json
+.repowise/lancedb/
+.repowise/wiki.db
+.repowise/jobs/
+.repowise/state.json
