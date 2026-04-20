@@ -11,14 +11,14 @@
 > (documentation, ownership, history, decisions). **Always verify against
 > actual source files before making changes** — the index may be stale.
 
-Last indexed: 2026-04-20 (commit dabc653). Confidence: 100%.
+Last indexed: 2026-04-20 (commit a395d8b). Confidence: 100%.
 ### Architecture
-repo is a compact, standalone Python project comprising 14 files and approximately 1,712 lines of code. It operates as a single repository (not a monorepo) with zero circular dependencies, ensuring a clean and predictable dependency graph. The codebase is predominantly written in Python (~57%), supplemented by JSON (~21%) for configuration/state data, YAML (~14%) for pipeline or infrastructure definitions, and Markdown (~7%) for documentation. The project focuses on testing and benchmarking integrations related to Model Context Protocol (MCP) configurations and SearXNG search functionality.
+repo is a lightweight, single-package Python project designed for benchmarking, testing, and managing search/extraction workflows with external backends (notably SearXNG) and MCP integration. The repository contains 19 files totaling approximately 2,250 lines of code, with zero circular dependencies and a flat directory structure that simplifies navigation and onboarding. Documentation is heavily prioritized, comprising over a third of the repository by volume. The codebase follows a test-driven development approach, with comprehensive coverage for backend integrations, configuration parsing, timeout handling, and security constraints.
 ### Key Modules
 | Module | Purpose | Owner |
 |--------|---------|-------|
-| `tests` | The tests module is a Python-based test suite responsible for validating core fu | — |
-| `root` | The root module is a Python-based toolkit designed for managing, patching, and b | — |
+| `tests` | The tests module is a Python-based validation suite designed to verify the confi | — |
+| `root` | The root module is a Python-based toolkit engineered for managing, evaluating, a | — |
 ### Hotspots (High Churn)
 | File | Churn | 90d Commits | Owner |
 |------|-------|-------------|-------|
