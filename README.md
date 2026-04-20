@@ -127,7 +127,7 @@ repowise search "timeout configuration"
 ## Requirements
 
 - Python 3.11+
-- [Hermes Agent](https://github.com/h chapo-io/hermes) installed at `~/.hermes/`
+- [Hermes Agent](https://github.com/nousresearch/hermes-agent) installed at `~/.hermes/`
 - A local inference server (LM Studio, Ollama, vLLM, etc.) with at least one model loaded
 - `httpx` and `pyyaml` in your Python environment
 
