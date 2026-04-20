@@ -135,6 +135,15 @@ class BenchmarkResult:
     context_ok: bool = True
     error: Optional[str] = None
 
+    # Prompt chain estimation (5-turn agent conversation)
+    chain_5turn_seconds: Optional[float] = None
+    chain_10turn_seconds: Optional[float] = None
+
+    # Output quality (1-10)
+    quality_score: Optional[float] = None
+    quality_response: Optional[str] = None
+    quality_details: Optional[dict] = None
+
 
 def _build_prompt(token_target: int) -> str:
     """Build a ~token_target length prompt from repeated known text."""
@@ -350,6 +359,239 @@ def _probe_context(base_url: str, model: str, token_count: int, timeout: int) ->
         return False
 
 
+# ─── Quality Scoring ──────────────────────────────────────────────────────
+
+# A structured prompt that tests instruction following, reasoning, and formatting.
+# The model must: follow format rules, solve a logic problem, write a function,
+# and produce valid structured output.
+QUALITY_PROMPT = """\
+You are being evaluated. Respond to ALL four tasks below. Follow every instruction precisely.
+
+Task 1 — Sort these numbers in descending order, as a JSON array: [42, 7, 13, 99, 3, 28]
+
+Task 2 — A bat and ball cost $1.10 total. The bat costs $1.00 more than the ball. How much does the ball cost? Answer with just the dollar amount.
+
+Task 3 — Write a Python function called "merge_sorted" that takes two sorted lists and returns a single merged sorted list. No imports allowed. Include a docstring.
+
+Task 4 — In exactly 3 bullet points, summarize what makes a good API design.
+
+Format your entire response as:
+=== TASK 1 ===
+(your answer)
+=== TASK 2 ===
+(your answer)
+=== TASK 3 ===
+(your answer)
+=== TASK 4 ===
+(your answer)
+"""
+
+def _score_quality(response_text: str) -> tuple[float, dict]:
+    """Score a model's response to the quality prompt on a 1-10 scale.
+
+    Returns (score, details_dict).
+    Scoring rubric (10 points total):
+      - Task 1: JSON array, correct order, all 6 numbers (2.5 pts)
+      - Task 2: Correct answer $0.05 (1.5 pts)
+      - Task 3: Valid function with correct name, docstring, no imports (3 pts)
+      - Task 4: Exactly 3 bullet points (2 pts)
+      - Overall format: Used the === separators correctly (1 pt)
+    """
+    text = response_text.strip()
+    details = {}
+    total = 0.0
+
+    # ── Task 1: Sort descending ──────────────────────────────────────────
+    t1_score = 0.0
+    # Find the task 1 section
+    t1 = _extract_task(text, 1)
+    if t1:
+        # Check for JSON array
+        import ast
+        try:
+            # Try to find a JSON array in the response
+            arr_match = re.search(r'\[[\d,\s.]+\]', t1)
+            if arr_match:
+                parsed = json.loads(arr_match.group())
+                expected = [99, 42, 28, 13, 7, 3]
+                if parsed == expected:
+                    t1_score = 2.5
+                elif sorted(parsed, reverse=True) == expected:
+                    # Correct values but wrong order
+                    t1_score = 1.0
+                elif set(parsed) == set(expected):
+                    # Has all numbers but wrong order
+                    t1_score = 0.75
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Fallback: check if all numbers appear in roughly descending order
+        if t1_score == 0:
+            numbers = re.findall(r'\b(\d+)\b', t1)
+            if set(int(n) for n in numbers) >= {3, 7, 13, 28, 42, 99}:
+                t1_score = 0.5
+    details["task1_sort"] = t1_score
+    total += t1_score
+
+    # ── Task 2: Bat and ball ─────────────────────────────────────────────
+    t2_score = 0.0
+    t2 = _extract_task(text, 2)
+    if t2:
+        # The correct answer is $0.05
+        if re.search(r'0\.05', t2):
+            t2_score = 1.5
+        elif re.search(r'5\s*cents?', t2, re.IGNORECASE):
+            t2_score = 1.5
+        elif re.search(r'5\b', t2):
+            t2_score = 1.0
+        elif re.search(r'0\.10|10\s*cents?', t2, re.IGNORECASE):
+            # Common wrong answer (the whole $1.10 trap)
+            t2_score = 0.25
+    details["task2_logic"] = t2_score
+    total += t2_score
+
+    # ── Task 3: merge_sorted function ────────────────────────────────────
+    t3_score = 0.0
+    t3 = _extract_task(text, 3)
+    if t3:
+        has_def = bool(re.search(r'def\s+merge_sorted', t3))
+        has_docstring = bool(re.search(r'"""|\'\'\'', t3))
+        has_return = bool(re.search(r'return', t3))
+        has_import = bool(re.search(r'import\s', t3))
+        has_two_lists = len(re.findall(r'(?:for|in|append|len|range)', t3)) >= 1
+
+        if has_def:
+            t3_score += 1.0  # correct function name
+        if has_docstring:
+            t3_score += 0.5
+        if has_return:
+            t3_score += 0.5
+        if has_two_lists:
+            t3_score += 0.5  # some actual logic
+        if has_import:
+            t3_score -= 0.5  # penalty for imports
+        t3_score = max(0, t3_score)
+
+        # Bonus: check if it looks like it would actually work
+        if t3_score >= 2.0 and re.search(r'while.*(?:i|j|a|b)\s*[<>=]', t3):
+            t3_score = min(3.0, t3_score + 0.5)  # has merge loop logic
+    details["task3_code"] = t3_score
+    total += t3_score
+
+    # ── Task 4: 3 bullet points ──────────────────────────────────────────
+    t4_score = 0.0
+    t4 = _extract_task(text, 4)
+    if t4:
+        bullets = re.findall(r'(?:^|\n)\s*(?:[-*•]|\d+[.)])\s', t4)
+        if len(bullets) == 3:
+            t4_score = 2.0
+        elif len(bullets) >= 2:
+            t4_score = 1.0
+        elif len(bullets) >= 1:
+            t4_score = 0.5
+        # Partial credit if it wrote 3 things even without bullets
+        if t4_score == 0 and len(t4.strip().split('\n')) >= 3:
+            t4_score = 0.5
+    details["task4_format"] = t4_score
+    total += t4_score
+
+    # ── Overall format: separators ───────────────────────────────────────
+    fmt_score = 0.0
+    found_separators = len(re.findall(r'===\s*TASK\s+\d\s*===', text, re.IGNORECASE))
+    if found_separators >= 4:
+        fmt_score = 1.0
+    elif found_separators >= 2:
+        fmt_score = 0.5
+    details["format_separators"] = fmt_score
+    total += fmt_score
+
+    details["total"] = round(total, 1)
+    return round(total, 1), details
+
+
+def _extract_task(text: str, task_num: int) -> str:
+    """Extract the text between === TASK N === and === TASK N+1 === (or end)."""
+    pattern = rf'===\s*TASK\s+{task_num}\s*===(.*?)(?====\s*TASK\s+{task_num+1}\s*===|$)'
+    m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    # Fallback: if no separators at all, return the whole text
+    return text
+
+
+def benchmark_quality(
+    base_url: str,
+    model: str,
+    timeout: int = 300,
+) -> tuple[Optional[float], Optional[str], Optional[dict]]:
+    """Run the quality evaluation prompt and score the response."""
+    try:
+        resp = httpx.post(
+            f"{base_url}/chat/completions",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": QUALITY_PROMPT}],
+                "max_tokens": 2048,
+                "temperature": 0.1,
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        score, details = _score_quality(content)
+        return score, content, details
+    except Exception as e:
+        return None, None, {"error": str(e)[:200]}
+
+
+# ─── Prompt Chain Estimation ─────────────────────────────────────────────
+
+def _estimate_chain_time(result: BenchmarkResult, turns: int = 5) -> Optional[float]:
+    """Estimate wall-clock time for a multi-turn agent conversation.
+
+    Models a realistic agent prompt chain:
+    - System prompt: ~500 tokens (present every turn)
+    - Turn 1: User message ~200 tokens, response ~300 tokens
+    - Turn N: Growing context from prior turns + tool result ~400 tokens,
+              response ~400 tokens
+
+    The context accumulates: each turn adds prior messages to the prompt.
+    """
+    if not result.pp_tokens_per_sec or not result.tg_tokens_per_sec:
+        if not result.ttft_seconds or not result.prompt_tokens:
+            return None
+        # Rough fallback: use TTFT directly
+        pp_speed = result.prompt_tokens / result.ttft_seconds
+        tg_speed = result.tg_tokens_per_sec or 10.0
+    else:
+        pp_speed = result.pp_tokens_per_sec
+        tg_speed = result.tg_tokens_per_sec
+
+    system_prompt = 500
+    total_time = 0.0
+    accumulated_context = system_prompt
+
+    for turn in range(1, turns + 1):
+        # Each turn adds a user message and tool result to context
+        user_msg = 200
+        tool_result = 400
+        expected_response = 350  # average response length
+
+        # This turn's prompt = everything accumulated so far + new input
+        prompt_tokens = accumulated_context + user_msg + tool_result
+
+        # Time = prompt processing + generation
+        pp_time = prompt_tokens / pp_speed
+        gen_time = expected_response / tg_speed
+        total_time += pp_time + gen_time
+
+        # Context grows by the exchange (user + assistant + tool messages)
+        accumulated_context += user_msg + expected_response + tool_result
+
+    return round(total_time, 1)
+
+
 # ─── Timeout Recommendation ─────────────────────────────────────────────────
 
 def recommend_timeout(result: BenchmarkResult, safety_factor: float = 2.5) -> dict:
@@ -414,14 +656,9 @@ def display_results(results: list[BenchmarkResult], show_timeouts: bool = False)
         return
 
     # Header
-    if show_timeouts:
-        print(f"\n{'Model':<30} {'Params':>7} {'R':>2} {'PP t/s':>8} {'TTFT s':>8} "
-              f"{'TG t/s':>8} {'Peak':>8} {'GT/s':>8} {'Aux/s':>7}")
-        print("─" * 105)
-    else:
-        print(f"\n{'Model':<30} {'Params':>7} {'R':>2} {'PP t/s':>8} {'TTFT s':>8} "
-              f"{'TG t/s':>8} {'Peak':>8} {'Reason':>7}")
-        print("─" * 90)
+    print(f"\n{'Model':<30} {'Params':>7} {'R':>2} {'PP t/s':>8} {'TTFT s':>8} "
+          f"{'TG t/s':>8} {'Peak':>6} {'Quality':>7} {'5-chain':>8} {'10-chain':>9}")
+    print("─" * 110)
 
     for r in good:
         params_str = f"{r.params_b:.0f}B" if r.params_b else "?"
@@ -433,20 +670,33 @@ def display_results(results: list[BenchmarkResult], show_timeouts: bool = False)
         tg_str = f"{r.tg_tokens_per_sec:.1f}" if r.tg_tokens_per_sec else "-"
         peak_str = f"{r.peak_tg_tokens_per_sec:.0f}" if r.peak_tg_tokens_per_sec else "-"
 
-        if show_timeouts:
-            rec = recommend_timeout(r)
-            gt_str = str(rec["gateway_timeout"])
-            aux_str = str(rec["aux_timeout"])
-            print(f"{is_r_marker}{r.model:<29} {params_str:>7} {reasoning_str:>2} "
-                  f"{pp_str:>8} {ttft_str:>8} {tg_str:>8} {peak_str:>8} "
-                  f"{gt_str:>8} {aux_str:>7}")
+        # Quality score with visual indicator
+        if r.quality_score is not None:
+            q = r.quality_score
+            if q >= 8:
+                q_bar = "●"
+            elif q >= 6:
+                q_bar = "◐"
+            elif q >= 4:
+                q_bar = "○"
+            else:
+                q_bar = "◌"
+            quality_str = f"{q_bar} {q:.1f}/10"
         else:
-            print(f"{is_r_marker}{r.model:<29} {params_str:>7} {reasoning_str:>2} "
-                  f"{pp_str:>8} {ttft_str:>8} {tg_str:>8} {peak_str:>8} {reasoning_str:>7}")
+            quality_str = "  -"
+
+        # Chain estimates formatted as human-readable time
+        chain5_str = _format_duration(r.chain_5turn_seconds) if r.chain_5turn_seconds else "-"
+        chain10_str = _format_duration(r.chain_10turn_seconds) if r.chain_10turn_seconds else "-"
+
+        print(f"{is_r_marker}{r.model:<29} {params_str:>7} {reasoning_str:>2} "
+              f"{pp_str:>8} {ttft_str:>8} {tg_str:>8} {peak_str:>6} "
+              f"{quality_str:>7} {chain5_str:>8} {chain10_str:>9}")
 
     for r in failed:
         err = r.error or "unknown"
-        print(f"  {r.model:<29} {'FAIL':>7} {'':>2} {'':>8} {'':>8} {'':>8} {'':>8} {err[:20]:>7}")
+        print(f"  {r.model:<29} {'FAIL':>7} {'':>2} {'':>8} {'':>8} {'':>8} {'':>6} "
+              f"{'':>7} {'':>8} {'':>9}  {err[:30]}")
 
     print()
     print("  R = reasoning tokens detected during generation")
@@ -455,10 +705,33 @@ def display_results(results: list[BenchmarkResult], show_timeouts: bool = False)
     print("  TTFT s = time to first content token (seconds)")
     print("  TG t/s = token generation speed (tokens/sec)")
     print("  Peak = peak generation speed in best 1s window")
+    print("  Quality = output quality score from structured evaluation (●>=8 ◐>=6 ○>=4 ◌<4)")
+    print("  5-chain = estimated time for a 5-turn agent conversation")
+    print("  10-chain = estimated time for a 10-turn agent conversation")
 
     if show_timeouts:
-        print("  GT/s = recommended gateway_timeout (seconds)")
-        print("  Aux/s = recommended aux model call timeout (seconds)")
+        print()
+        print("  ── Timeout Recommendations ──")
+        print(f"  {'Model':<30} {'Gateway (s)':>12} {'Aux (s)':>10} {'Max TTFT est.':>14}")
+        print("  " + "─" * 70)
+        for r in good:
+            rec = recommend_timeout(r)
+            print(f"  {r.model:<30} {rec['gateway_timeout']:>12} {rec['aux_timeout']:>10} "
+                  f"{rec.get('est_max_ttft_s', '?'):>13}s")
+
+
+def _format_duration(seconds: float) -> str:
+    """Format seconds into human-readable duration."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        m = int(seconds // 60)
+        s = int(seconds % 60)
+        return f"{m}m{s:02d}s"
+    else:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        return f"{h}h{m:02d}m"
 
 
 # ─── Main ───────────────────────────────────────────────────────────────────
@@ -526,12 +799,29 @@ def run_benchmark(
             runs=runs,
             probe_context_sizes=probe_ctx,
         )
+
         if r.error:
             print(f"FAILED ({r.error[:60]})")
         else:
             tg = f"{r.tg_tokens_per_sec:.1f} t/s" if r.tg_tokens_per_sec else "?"
             ttft = f"{r.ttft_seconds:.1f}s TTFT" if r.ttft_seconds else "? TTFT"
             print(f"OK — {tg}, {ttft}")
+
+            # Estimate prompt chain times
+            r.chain_5turn_seconds = _estimate_chain_time(r, turns=5)
+            r.chain_10turn_seconds = _estimate_chain_time(r, turns=10)
+
+            # Run quality evaluation
+            print(f"  [{i}/{len(models)}] {model} quality ...", end=" ", flush=True)
+            q_score, q_response, q_details = benchmark_quality(base_url, model, timeout=600)
+            r.quality_score = q_score
+            r.quality_response = q_response
+            r.quality_details = q_details
+            if q_score is not None:
+                print(f"{q_score:.1f}/10")
+            else:
+                print("failed")
+
         results.append(r)
 
     # Display
