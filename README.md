@@ -43,7 +43,9 @@ When `benchmark.py` runs (or `shelter.py benchmark`):
 3. **Calculate** -- derives prompt processing speed (prompt_tokens / TTFT), generation throughput ((tokens - 1) / generation_time), and peak 1-second window speed
 4. **Detect** -- checks for `reasoning_content` fields in stream deltas to identify reasoning models
 5. **Probe** -- optionally tests increasing context sizes (4K, 8K, 16K, 32K) to find the actual context limit
-6. **Recommend** -- extrapolates TTFT to max context, estimates generation time for 4096 output tokens, applies a 2.5x safety factor
+6. **Quality** -- sends each model a structured 4-task evaluation prompt (JSON sorting, a logic trap, code generation, formatted bullet points) and scores the response on a 1--10 rubric
+7. **Estimate** -- calculates wall-clock time for 5-turn and 10-turn agent conversations, accounting for growing context as prior messages accumulate
+8. **Recommend** -- extrapolates TTFT to max context, estimates generation time for 4096 output tokens, applies a 2.5x safety factor
 
 ## Usage
 
