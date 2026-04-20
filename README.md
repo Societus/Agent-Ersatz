@@ -1,78 +1,85 @@
-# hermes-shelter
+# Agent-Ersatz
 
-Self-healing configuration manager for Hermes Agent. Detects drift from declared baseline state, applies patches (static then LLM-driven), runs verification tests, and auto-reverts on failure.
+Self-healing configuration manager + model benchmark suite for Hermes Agent.
 
-## How It Works
+**Config Survival** — Detects drift from declared baseline state, applies patches (static then LLM-driven), runs verification tests, and auto-reverts on failure. Survives `hermes update` via a git post-merge hook.
 
-```
-hermes update (git pull)
-        |
-        v
-  post-merge hook
-        |
-        v
-  shelter.py heal
-        |
-        ├── 1. Snapshot current state
-        ├── 2. Detect drift vs baseline.yaml
-        ├── 3. Apply static patches (git apply)
-        ├── 4. Re-check drift
-        ├── 5. LLM edits for remaining issues
-        ├── 6. Run verification tests
-        └── 7. All pass → keep | Any fail → revert
+**Model Benchmark** — Benchmarks all models on a local inference provider. Measures prompt processing speed (TTFT), token generation speed, context window limits, reasoning token behavior, and estimated parameter count. Ranks models and recommends timeout values.
+
+## Quick Start
+
+```bash
+cd ~/projects/Agent-Ersatz
+
+# First run: detect local LLM provider
+python shelter.py setup
+
+# Benchmark all models on the provider
+python shelter.py benchmark
+
+# Check config state vs baseline
+python shelter.py check
+
+# Auto-heal after hermes update
+python shelter.py heal
 ```
 
 ## Commands
 
-```
-python shelter.py check     # Report drift vs baseline (no changes)
-python shelter.py heal      # Full detect → patch → test → keep/revert cycle
-python shelter.py snapshot  # Capture current known-good state
-python shelter.py test      # Run verification tests only
-```
+| Command | Description |
+|---------|-------------|
+| `setup` | Configure LLM provider (auto-detects local endpoints) |
+| `benchmark` | Benchmark all models, rank by speed, recommend timeouts |
+| `check` | Report current config state vs baseline |
+| `heal` | Detect drift, patch (static + LLM), test, keep/revert |
+| `snapshot` | Capture current known-good state |
+| `test` | Run verification tests |
 
 ## Structure
 
 ```
-hermes-shelter/
-├── shelter.py              # Main orchestrator
-├── shelter.conf            # LLM endpoint config
+Agent-Ersatz/
+├── shelter.py          # Main entry: config survival + CLI
+├── benchmark.py        # Model benchmark suite
+├── shelter.conf        # User-specific (gitignored): provider, model, timeouts
 ├── state/
-│   ├── baseline.yaml       # Expected state declarations
-│   └── snapshots/          # Timestamped state snapshots
-├── patches/
-│   └── searxng-backend.patch
-├── tests/
-│   ├── test_searxng_backend.py
-│   ├── test_searxng_search.py
-│   ├── test_searxng_extract.py
-│   ├── test_timeouts.py
-│   ├── test_no_cloud_keys.py
-│   └── test_mcp_config.py
-└── README.md
+│   ├── baseline.yaml   # Expected config state declarations
+│   └── snapshots/      # Timestamped state captures
+├── patches/            # Static patches to apply after updates
+└── tests/              # Verification test scripts
 ```
 
-## Baseline Declarations
+## Auto-Detection
 
-`state/baseline.yaml` declares the expected state using three mechanisms:
+On first run, shelter.py discovers local LLM providers by:
 
-- **checks** — each declares a file, content it `must_contain`, content it `must_not_contain`, and YAML key-value pairs that must hold
-- **patches** — git-format patches that shelter tries to apply before falling back to LLM
-- **test_scripts** — Python scripts that verify the config actually works end-to-end
+1. Reading Hermes `config.yaml` custom_providers (skips cloud URLs)
+2. Probing known ports: LM Studio (1234), Ollama (11434), vLLM (8000), SGLang (30000), TabbyAPI (5000), koboldcpp (5001)
+3. Offering interactive selection if multiple found
 
-## LLM-Driven Patching
+No provider URL or model name is hardcoded in the repo.
 
-When static patches fail (upstream refactored the target file), shelter sends the file + instructions to the local LLM, asking it to produce the modified file. The LLM response is written to disk, then tested. If tests fail, all changes are reverted from backups.
+## Post-Merge Hook
 
-Uses the local OmenLM instance at `omenofdoom:1234` — no cloud calls.
+The git post-merge hook at `~/.hermes/hermes-agent/.git/hooks/post-merge` calls `shelter.py heal` automatically after `hermes update`.
 
-## Adding New Checks
+## Benchmark Details
 
-1. Add a check entry to `state/baseline.yaml`
-2. Write a test script in `tests/`
-3. Add the test to the `test_scripts` list in baseline
-4. Run `python shelter.py check` and `python shelter.py test` to verify
+The benchmark measures for each model:
 
-## Integration with Hermes Updates
+- **Prompt Processing Speed** (tokens/s) — how fast it ingests context
+- **Time to First Token** (TTFT, seconds) — the wait before generation starts
+- **Token Generation Speed** (tokens/s) — generation throughput
+- **Reasoning Detection** — whether the model emits reasoning/thinking tokens
+- **Context Window** — maximum context size discovered from API or probing
+- **Estimated Parameters** — from model name heuristics
+- **Recommended Timeout** — calculated from TTFT + context scaling
 
-The git post-merge hook at `~/.hermes/hermes-agent/.git/hooks/post-merge` delegates to `shelter.py heal`. This fires automatically after every `hermes update`.
+Results are saved to `benchmark-results.json` and printed as a ranked table.
+
+Options:
+- `--skip-reasoning` — exclude models that use reasoning tokens
+- `--quick` — fast benchmark (1 run, shorter prompts)
+- `--full` — thorough benchmark (3 runs, multiple context sizes)
+- `--save` — save results to file
+- `--recommend-timeouts` — output shelter.conf timeout recommendations

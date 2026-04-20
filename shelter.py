@@ -1,6 +1,6 @@
 #!/home/martin/.hermes/hermes-agent/venv/bin/python
 """
-hermes-shelter — self-healing config manager for Hermes Agent
+Agent-Ersatz — self-healing config manager + benchmark suite for Hermes Agent
 
 Detects drift between expected and actual state of Hermes config files,
 uses the local LLM to generate targeted edits, tests the result, and
@@ -183,7 +183,7 @@ def _pick_fast_model(models: list[str]) -> str | None:
 
 def cmd_setup():
     """Interactive first-run setup: detect local LLM and configure shelter."""
-    print("═══ Hermes Shelter — Setup ═══\n")
+    print("═══ Agent-Ersatz — Setup ═══\n")
 
     conf = {}
     changed = False
@@ -686,7 +686,7 @@ def run_tests() -> dict:
 
 def cmd_check():
     """Report current state vs baseline."""
-    print("═══ Hermes Shelter — State Check ═══")
+    print("═══ Agent-Ersatz — State Check ═══")
     baseline = load_baseline()
 
     if not baseline.get("checks"):
@@ -706,7 +706,7 @@ def cmd_check():
 
 def cmd_heal():
     """Detect drift, apply patches (static then LLM), test, keep/revert."""
-    print("═══ Hermes Shelter — Heal ═══")
+    print("═══ Agent-Ersatz — Heal ═══")
     heal_start = time.time()
 
     # Step 1: Take a pre-heal snapshot
@@ -814,13 +814,13 @@ def _gather_context(issue: dict) -> str:
 
 def cmd_snapshot():
     """Take a snapshot of current state."""
-    print("═══ Hermes Shelter — Snapshot ═══")
+    print("═══ Agent-Ersatz — Snapshot ═══")
     take_snapshot()
 
 
 def cmd_test():
     """Run tests against current state."""
-    print("═══ Hermes Shelter — Test ═══")
+    print("═══ Agent-Ersatz — Test ═══")
     results = run_tests()
     print(f"\n  Results: {results['passed']} passed, {results['failed']} failed")
     if results["failed"] > 0:
@@ -829,24 +829,43 @@ def cmd_test():
                 print(f"    ✗ {r['name']}: {r.get('stderr', 'unknown error')[:200]}")
 
 
+# ─── Benchmark Command ───────────────────────────────────────────────────
+
+def cmd_benchmark():
+    """Run model benchmark via benchmark.py."""
+    import subprocess
+    bench_script = SHELTER_DIR / "benchmark.py"
+    if not bench_script.exists():
+        print("  benchmark.py not found")
+        return
+    # Forward all args after 'benchmark' to benchmark.py
+    bench_args = sys.argv[2:]
+    r = subprocess.run(
+        [sys.executable, str(bench_script)] + bench_args,
+    )
+    sys.exit(r.returncode)
+
+
 # ─── CLI ────────────────────────────────────────────────────────────────────
 
 COMMANDS = {
     "setup": ("Configure LLM provider (detect local endpoints)", cmd_setup),
+    "benchmark": ("Benchmark models, rank by speed, recommend timeouts", cmd_benchmark),
     "check": ("Report current state vs baseline", cmd_check),
     "heal": ("Detect drift, patch via static + LLM, test, keep/revert", cmd_heal),
     "snapshot": ("Capture current known-good state", cmd_snapshot),
     "test": ("Run verification tests", cmd_test),
 }
 
-
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print("hermes-shelter — self-healing config manager for Hermes Agent\n")
-        print("Usage: python shelter.py <command>\n")
+        print("Agent-Ersatz — self-healing config manager + benchmark suite for Hermes Agent\n")
+        print("Usage: python shelter.py <command> [args]\n")
         print("Commands:")
         for name, (desc, _) in COMMANDS.items():
             print(f"  {name:12s} {desc}")
+        print("\n  'benchmark' accepts additional flags: --quick, --full, --skip-reasoning,")
+        print("  --model <name>, --save <file>, --recommend-timeouts")
         sys.exit(1)
 
     command = sys.argv[1]

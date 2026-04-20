@@ -4,3 +4,4 @@ __pycache__/
 .shelter-backup
 state/snapshots/*.yaml
 shelter.conf
+benchmark-*.json
